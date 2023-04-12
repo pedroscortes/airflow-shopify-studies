@@ -1,0 +1,55 @@
+import shopify
+import pandas as pd
+from sqlalchemy import create_engine
+import psycopg2 
+import io
+
+
+token = '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'
+merchant = 'case-sallve-dataengineer-01.myshopify.com'
+api_session = shopify.Session(merchant, '2022-10', token)
+shopify.ShopifyResource.activate_session(api_session)
+
+
+products = shopify.Product.find(limit=100)
+products = pd.DataFrame([s.attributes for s in products])
+
+products = (products.set_index('id')
+              .apply(lambda x: x.apply(pd.Series).stack())
+              .reset_index()
+              .drop('level_1', 1))
+
+products = products.groupby(['id'], as_index = False).apply(lambda group: group.ffill())
+
+
+engine = create_engine(
+    'postgresql+psycopg2://root:root@172.17.0.1:5432/test_db')
+
+
+conn = engine.raw_connection()
+cur = conn.cursor()
+output = io.StringIO()
+
+
+query = ("SELECT * FROM public.products")
+
+products_db = pd.read_sql_query(query, conn)
+
+
+changes = products[~products.index.isin(products_db.index)]
+
+
+if len(changes) > 0:
+    changes.to_csv(output, sep='\t', header=False, index=False)
+    output.seek(0)
+    contents = output.getvalue()
+    cur.copy_from(output, 'products', null="") 
+
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    print(f"Added {len(changes)} new products to the database")
+else:
+    print("No new products to add to the database")
